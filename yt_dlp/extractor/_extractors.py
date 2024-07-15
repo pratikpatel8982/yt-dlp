@@ -793,6 +793,7 @@ from .hearthisat import HearThisAtIE
 from .heise import HeiseIE
 from .hellporno import HellPornoIE
 from .hgtv import HGTVComShowIE
+from .hianime import HiAnimeIE
 from .hidive import HiDiveIE
 from .historicfilms import HistoricFilmsIE
 from .hitrecord import HitRecordIE
