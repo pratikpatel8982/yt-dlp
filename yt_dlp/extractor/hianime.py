@@ -1,177 +1,7 @@
 import re
 
 from yt_dlp.extractor.common import InfoExtractor
-from yt_dlp.utils import (
-    ExtractorError,
-    get_element_by_class,
-)
-
-data_id_to_number = {}
-
-def _get_elements_by_tag_and_attrib(html, tag=None, attribute=None, value=None, escape_value=True):
-    """Return the content of the tag with the specified attribute in the passed HTML document"""
-
-    if tag is None:
-        tag = '[a-zA-Z0-9:._-]+'
-    if attribute is None:
-        attribute = ''
-    else:
-        attribute = rf'\s+(?P<attribute>{re.escape(attribute)})'
-    if value is None:
-        value = ''
-    else:
-        value = re.escape(value) if escape_value else value
-        value = f'=[\'"]?(?P<value>{value})[\'"]?'
-
-    retlist = []
-    for m in re.finditer(rf'''(?xs)
-        <(?P<tag>{tag})
-         (?:\s+[a-zA-Z0-9:._-]+(?:=[a-zA-Z0-9:._-]*|="[^"]*"|='[^']*'|))*?
-         {attribute}{value}
-         (?:\s+[a-zA-Z0-9:._-]+(?:=[a-zA-Z0-9:._-]*|="[^"]*"|='[^']*'|))*?
-        \s*>
-        (?P<content>.*?)
-        </\1>
-    ''', html):
-        retlist.append(m)
-
-    return retlist
-
-
-def _get_element_by_tag_and_attrib(html, tag=None, attribute=None, value=None, escape_value=True):
-    retval = _get_elements_by_tag_and_attrib(html, tag, attribute, value, escape_value)
-    return retval[0] if retval else None
-
-
-
-def _get_title_for_single_episode(self, slug, playlist_id, episode_id, url):
-    data=_extract_playlist(self, slug, playlist_id, url)
-    number=int(data_id_to_number.get(episode_id))
-    for entry in data['entries']:
-        if entry['id'] == episode_id:
-            title=entry['title']
-            return title,number
-    return None,None
-
-
-
-
-def _get_anime_title(self, slug, playlist_id):
-    webpage = self._download_webpage(f'https://hianime.to/{slug}-{playlist_id}', playlist_id)
-    return get_element_by_class('film-name dynamic-name',webpage)
-
-
-
-
-def _extract_playlist(self, slug, playlist_id, url):
-
-    animeTitle =  _get_anime_title(self, slug, playlist_id)
-    playlist_url = f'https://hianime.to/ajax/v2/episode/list/{playlist_id}'
-    playlist_data = self._download_json(playlist_url, playlist_id)
-    episodes = _get_elements_by_tag_and_attrib(playlist_data['html'], tag='a', attribute='class', value='ssl-item  ep-item')
-
-    entries = []
-    for episode in episodes:
-        # Get the entire match string
-        episode_html = episode.group(0)
-
-        # Extract the required attributes using re.search
-        title_match = re.search(r'title="([^"]+)"', episode_html)
-        data_number_match = re.search(r'data-number="([^"]+)"', episode_html)
-        data_id_match = re.search(r'data-id="([^"]+)"', episode_html)
-        href_match = re.search(r'href="([^"]+)"', episode_html)
-
-        title = title_match.group(1) if title_match else None
-        data_number = data_number_match.group(1) if data_number_match else None
-        data_id = data_id_match.group(1) if data_id_match else None
-        href = href_match.group(1) if href_match else None
-
-        if data_id and data_number:
-            data_id_to_number[data_id] = data_number
-
-        # Create a dictionary for each episode
-        entries.append(self.url_result(
-            f'https://hianime.to{href}',
-            ie=HiAnimeIE.ie_key(),
-            video_id=data_id,
-            video_title=title,
-        ))
-
-    return self.playlist_result(entries, playlist_id, animeTitle)
-
-def _extract_episode(self, slug, playlist_id, episode_id, url):
-    servers_url = f'https://hianime.to/ajax/v2/episode/servers?episodeId={episode_id}'
-    servers_data = self._download_json(servers_url, episode_id)
-
-    formats = []
-    subtitles = {}
-
-    for server_type in ['sub', 'dub']:
-        server_items = _get_elements_by_tag_and_attrib(servers_data['html'], tag='div', attribute='data-type', value=f'{server_type}', escape_value=False)
-
-        server_id = None
-        if server_items:
-            server_html = server_items[0].group(0)
-            data_id_match = re.search(r'data-id="([^"]+)"', server_html)
-            if data_id_match:
-                server_id = data_id_match.group(1)
-
-        if server_id:
-            sources_url = f'https://hianime.to/ajax/v2/episode/sources?id={server_id}'
-            sources_data = self._download_json(sources_url, server_id)
-            link = sources_data.get('link')
-            if link:
-                # Extract video id from the link URL
-                sources_id_match = re.search(r'/embed-2/[^/]+/([^?]+)\?', link)
-                if sources_id_match:
-                    sources_id = sources_id_match.group(1)
-
-                    video_url = f'https://megacloud.tv/embed-2/ajax/e-1/getSources?id={sources_id}'
-                    video_data = self._download_json(video_url, sources_id)
-
-
-                    sources = video_data.get('sources', [])
-                    tracks = video_data.get('tracks', [])
-                    language = 'Japanese' if server_type == 'sub' else 'English'
-                    for source in sources:
-                        file_url = source.get('file')
-                        if file_url:
-                            if file_url.endswith('.m3u8'):
-                                extracted_formats = self._extract_m3u8_formats(
-                                    file_url, episode_id, 'mp4', entry_protocol='m3u8_native',
-                                    m3u8_id=f'{server_type}', fatal=False,
-                                )
-                                for f in extracted_formats:
-                                    f['language'] = language
-                                formats.extend(extracted_formats)
-
-                    # Process subtitle tracks
-                    tracks = video_data.get('tracks', [])
-                    for track in tracks:
-                        if track.get('kind') == 'captions':
-                            file_url = track.get('file')
-                            label = server_type
-                            if file_url:
-                                if label not in subtitles:
-                                    subtitles[label] = []  # Initialize list if not exists
-                                subtitles[label].append({
-                                    'ext': 'vtt',
-                                    'url': file_url,
-                                })
-
-    title, episode_number = _get_title_for_single_episode(self, slug, playlist_id, episode_id, url)
-    return {
-        'id': episode_id,
-        'title': title,
-        'formats': formats,
-        'subtitles': subtitles,
-        'series': _get_anime_title(self, slug, playlist_id),
-        'series_id': playlist_id,
-        'episode': title,
-        'episode_number': episode_number,
-        'episode_id': episode_id,
-    }
-
+from yt_dlp.utils import ExtractorError, clean_html, get_element_by_class
 
 
 class HiAnimeIE(InfoExtractor):
@@ -222,14 +52,194 @@ class HiAnimeIE(InfoExtractor):
         },
     ]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.anime_title = None
+        self.episode_list = {}
+        self.language = {
+            'sub': 'ja',
+            'dub': 'en',
+        }
+        self.language_codes = {
+            'Arabic': 'ar',
+            'English Dubbed': 'en-IN',
+            'English Subbed': 'en',
+            'French - Francais(France)': 'fr',
+            'German - Deutsch': 'de',
+            'Italian - Italiano': 'it',
+            'Portuguese - Portugues(Brasil)': 'pt',
+            'Russian': 'ru',
+            'Spanish - Espanol': 'es',
+            'Spanish - Espanol(Espana)': 'es',
+        }
+
     def _real_extract(self, url):
         mobj = self._match_valid_url(url)
         playlist_id = mobj.group('playlist_id')
         episode_id = mobj.group('episode_id')
         slug = mobj.group('slug')
+
         if episode_id:
-            return _extract_episode(self, slug, playlist_id, episode_id,url)
+            return self._extract_episode(slug, playlist_id, episode_id, url)
         elif playlist_id:
-            return _extract_playlist(self, slug, playlist_id, url)
+            return self._extract_playlist(slug, playlist_id, url)
         else:
             raise ExtractorError('Unsupported URL format')
+
+    def _extract_custom_m3u8_formats(self, m3u8_url, episode_id, server_type=None):
+        formats = self._extract_m3u8_formats(m3u8_url, episode_id, 'mp4', entry_protocol='m3u8_native', fatal=False, note='Downloading M3U8 Information')
+
+        for f in formats:
+            height = f.get('height')
+            f['format_id'] = f'{server_type.upper()}{height}p'
+            f['language'] = self.language[server_type]
+        return formats
+
+    def _get_anime_title(self, slug, playlist_id):
+        if not self.anime_title:
+            webpage = self._download_webpage(f'https://hianime.to/{slug}-{playlist_id}', playlist_id, note='Fetching Anime Title')
+            self.anime_title = get_element_by_class('film-name dynamic-name', webpage)
+        return self.anime_title
+
+    def _extract_playlist(self, slug, playlist_id, url):
+        anime_title = self._get_anime_title(slug, playlist_id)
+        playlist_url = f'https://hianime.to/ajax/v2/episode/list/{playlist_id}'
+        playlist_data = self._download_json(playlist_url, playlist_id, note='Fetching Episode List')
+        episodes = self._get_elements_by_tag_and_attrib(playlist_data['html'], tag='a', attribute='class', value='ssl-item  ep-item')
+
+        entries = []
+        for episode in episodes:
+            episode_html = episode.group(0)
+
+            # Extract episode details
+            title_match = re.search(r'title="([^"]+)"', episode_html)
+            data_number_match = re.search(r'data-number="([^"]+)"', episode_html)
+            data_id_match = re.search(r'data-id="([^"]+)"', episode_html)
+            href_match = re.search(r'href="([^"]+)"', episode_html)
+
+            title = clean_html(title_match.group(1)) if title_match else None
+            data_number = data_number_match.group(1) if data_number_match else None
+            data_id = data_id_match.group(1) if data_id_match else None
+            url = f'https://hianime.to{href_match.group(1)}' if href_match else None
+
+            # Add episode details to episode_list
+            self.episode_list[data_id] = {
+                'title': title,
+                'number': int(data_number),
+                'url': url,
+            }
+
+            # Prepare entry for playlist result
+            entries.append(self.url_result(
+                url,
+                ie=self.ie_key(),
+                video_id=data_id,
+                video_title=title,
+            ))
+
+        return self.playlist_result(entries, playlist_id, anime_title)
+
+    def _extract_episode(self, slug, playlist_id, episode_id, url):
+        anime_title = self._get_anime_title(slug, playlist_id)
+        episode_data = self.episode_list.get(episode_id)
+        if not episode_data:
+            self._extract_playlist(slug, playlist_id, url)
+            episode_data = self.episode_list.get(episode_id)
+        if not episode_data:
+            raise ExtractorError(f'Episode data for episode_id {episode_id} not found')
+
+        # Extract episode information and formats
+        servers_url = f'https://hianime.to/ajax/v2/episode/servers?episodeId={episode_id}'
+        servers_data = self._download_json(servers_url, episode_id, note='Fetching Server IDs')
+
+        formats = []
+        subtitles = {}
+
+        for server_type in ['sub', 'dub']:
+            server_items = self._get_elements_by_tag_and_attrib(servers_data['html'], tag='div', attribute='data-type', value=f'{server_type}', escape_value=False)
+            server_id = next((re.search(r'data-id="([^"]+)"', item.group(0)).group(1) for item in server_items if re.search(r'data-id="([^"]+)"', item.group(0))), None)
+
+            if not server_id:
+                break
+
+            sources_url = f'https://hianime.to/ajax/v2/episode/sources?id={server_id}'
+            sources_data = self._download_json(sources_url, episode_id, note=f'Getting {server_type.upper()}BED Episode Information')
+            link = sources_data.get('link')
+
+            if not link:
+                break
+
+            sources_id_match = re.search(r'/embed-2/[^/]+/([^?]+)\?', link)
+            sources_id = sources_id_match.group(1) if sources_id_match else None
+
+            if not sources_id:
+                break
+
+            video_url = f'https://megacloud.tv/embed-2/ajax/e-1/getSources?id={sources_id}'
+            video_data = self._download_json(video_url, episode_id, note=f'Getting {server_type.upper()}BED Episode Formats')
+            sources = video_data.get('sources', [])
+
+            for source in sources:
+                file_url = source.get('file')
+
+                if not (file_url and file_url.endswith('.m3u8')):
+                    break
+
+                extracted_formats = self._extract_custom_m3u8_formats(file_url, episode_id, server_type)
+                formats.extend(extracted_formats)
+
+            tracks = video_data.get('tracks', [])
+
+            for track in tracks:
+                if track.get('kind') == 'captions':
+                    file_url = track.get('file')
+                    language = track.get('label')
+                    if language == 'English':
+                        language = f'{language} {server_type.capitalize()}bed'
+                    language_code = self.language_codes.get(language)
+                    if not language_code:
+                        language_code = language
+
+                    if not file_url:
+                        break
+
+                    if (language_code) not in subtitles:
+                        subtitles[language_code] = []
+
+                    subtitles[language_code].append({
+                        'name': language,
+                        'url': file_url,
+                    })
+
+        return {
+            'id': episode_id,
+            'title': episode_data['title'],
+            'formats': formats,
+            'subtitles': subtitles,
+            'series': anime_title,
+            'series_id': playlist_id,
+            'episode': episode_data['title'],
+            'episode_number': episode_data['number'],
+            'episode_id': episode_id,
+        }
+
+    def _get_elements_by_tag_and_attrib(self, html, tag=None, attribute=None, value=None, escape_value=True):
+        if tag is None:
+            tag = r'[a-zA-Z0-9:._-]+'
+
+        if attribute:
+            attribute = rf'\s+{re.escape(attribute)}'
+
+        if value:
+            value = re.escape(value) if escape_value else value
+            value = f'=[\'"]?(?P<value>{value})[\'"]?'
+
+        return list(re.finditer(rf'''(?xs)
+            <{tag}
+            (?:\s+[a-zA-Z0-9:._-]+(?:=[a-zA-Z0-9:._-]*|="[^"]*"|='[^']*'|))*?
+            {attribute}{value}
+            (?:\s+[a-zA-Z0-9:._-]+(?:=[a-zA-Z0-9:._-]*|="[^"]*"|='[^']*'|))*?
+            \s*>
+            (?P<content>.*?)
+            </{tag}>
+        ''', html))
